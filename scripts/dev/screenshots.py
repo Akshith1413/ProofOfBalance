@@ -2,7 +2,7 @@
 """Capture README screenshots with a headless browser.
 
   pip install playwright   # uses an installed Chrome; no browser download needed
-  scripts/dev/screenshots.py page  URL OUT.png [--text "Ledger gate: FAILED"] [--width 1280] [--wait-ms 2000]
+  scripts/dev/screenshots.py page  URL OUT.png [--text "Ledger gate: FAILED"] [--open-details] [--width 1280]
   scripts/dev/screenshots.py term  INPUT.txt OUT.png --title "kubectl argo rollouts get rollout pob-worker"
 
 page: with --text, crops to the smallest block (comment, panel, card) containing that text.
@@ -102,13 +102,23 @@ def shot(args, browser) -> None:
                             color_scheme="light")
     page.goto(args.url, wait_until="networkidle", timeout=120_000)
     page.wait_for_timeout(args.wait_ms)
+    if args.open_details:
+        page.evaluate("document.querySelectorAll('details').forEach(d => d.open = true)")
     if args.text:
         target = page.evaluate(CROP_JS, args.text)
         if not target:
             sys.exit(f"text not found on page: {args.text!r}")
         loc = page.locator(f"#{target}" if not target.startswith("[") else target).first
+        # Sticky headers would be painted over a tall element: hide them and make
+        # the viewport tall enough to hold the whole element.
+        page.add_style_tag(content="[class*='sticky'],[class*='Sticky'],header{position:static!important}")
+        box = loc.bounding_box() or {"height": args.height}
+        page.set_viewport_size({"width": args.width, "height": max(args.height, int(box["height"]) + 200)})
         loc.scroll_into_view_if_needed()
         loc.screenshot(path=args.out)
+    elif args.clip:
+        x, y, w, h = (float(v) for v in args.clip.split(","))
+        page.screenshot(path=args.out, clip={"x": x, "y": y, "width": w, "height": h})
     else:
         page.screenshot(path=args.out, full_page=args.full)
 
@@ -120,6 +130,8 @@ def main() -> None:
     p.add_argument("url"); p.add_argument("out")
     p.add_argument("--text"); p.add_argument("--width", type=int, default=1280); p.add_argument("--height", type=int, default=900)
     p.add_argument("--wait-ms", type=int, default=2000); p.add_argument("--full", action="store_true")
+    p.add_argument("--clip", help="x,y,width,height in CSS pixels")
+    p.add_argument("--open-details", action="store_true", help="expand every <details> block first")
     t = sub.add_parser("term")
     t.add_argument("input"); t.add_argument("out"); t.add_argument("--title", default="")
     t.add_argument("--width", type=int, default=1100)

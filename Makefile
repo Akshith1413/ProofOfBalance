@@ -1,7 +1,7 @@
 # Shortcuts. Every target is a thin wrapper around a script you can run directly.
 PY ?= .venv/bin/python
 
-.PHONY: help venv test test-integration traffic up down gate gate-kind baseline aws-up aws-down aws-pause aws-test-alerts lint
+.PHONY: help venv test test-integration traffic up down replay diff gate gate-kind baseline aws-up aws-down aws-pause aws-test-alerts lint
 
 help:            ## list targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-17s %s\n", $$1, $$2}'
@@ -23,6 +23,17 @@ up:              ## local stack (docker compose) + smoke test
 
 down:            ## stop local stacks
 	scripts/teardown.sh --local
+
+replay:          ## replay traffic/day1.jsonl against the running compose stack, export the ledger to out/local/run.csv
+	@mkdir -p out/local
+	$(PY) tools/replay.py --file traffic/day1.jsonl --url http://localhost:$${POB_SERVICE_PORT:-8080} \
+	  --workers 8 --summary-json out/local/replay.json
+	$(PY) tools/export_ledger.py --dsn postgresql://pob:pob@localhost:$${POB_PG_PORT:-5432}/pob \
+	  --out out/local/run.csv --rail-url http://localhost:$${POB_RAIL_PORT:-8081}
+
+diff:            ## diff out/local/run.csv against baseline/ledger_baseline.csv (exit 1 = money moved)
+	@$(PY) tools/diff_ledger.py --baseline baseline/ledger_baseline.csv --run out/local/run.csv \
+	  --report out/local/report.md --rows-out out/local/diff_rows.csv; rc=$$?; cat out/local/report.md; exit $$rc
 
 gate:            ## ledger gate on docker compose (pass ARGS="ROUNDING_MODE=ROUND_HALF_UP")
 	scripts/local-gate.sh $(ARGS)
