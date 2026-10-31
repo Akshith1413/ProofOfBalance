@@ -48,7 +48,7 @@ service:
     limits: { memory: 256Mi }
 
 worker:
-  replicas: 1
+  replicas: 4
   threads: 4
   # One value for CI and production, so the ledger gate tests what will run.
   railTimeoutMs: 2000
