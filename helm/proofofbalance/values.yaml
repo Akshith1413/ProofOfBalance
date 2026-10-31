@@ -10,7 +10,7 @@ imagePullSecrets: []
 
 # Anything here changes money; the ledger gate will notice.
 settlement:
-  roundingMode: ROUND_HALF_EVEN   # banker's rounding: a half-cent goes to the even cent
+  roundingMode: ROUND_HALF_UP     # a half-cent always rounds up, like the finance spreadsheet
   timezone: UTC                   # value dates are UTC calendar days
   maxUsdAmount: "10000000.00"
   logLevel: INFO
