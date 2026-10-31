@@ -51,7 +51,7 @@ worker:
   replicas: 4
   threads: 4
   # One value for CI and production, so the ledger gate tests what will run.
-  railTimeoutMs: 2000
+  railTimeoutMs: 100
   maxAttempts: 5
   retryBaseMs: 500
   resources:
