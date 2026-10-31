@@ -1,0 +1,54 @@
+# Prometheus alerting rules for ProofOfBalance.
+# Plain rule-file format (promtool check rules monitoring/alert-rules.yaml);
+# the Helm chart embeds this exact file as the spec of a PrometheusRule.
+groups:
+  - name: proofofbalance.money
+    rules:
+      - alert: LedgerUnbalanced
+        expr: max(pob_ledger_unbalanced_payments) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $value }} payment(s) whose postings do not sum to zero"
+          description: >-
+            The reconciler found payments whose postings do not balance per currency.
+            Money has been created or destroyed. Stop deploys and investigate the ledger.
+      - alert: DuplicatePayout
+        expr: sum(increase(pob_rail_duplicate_transfers_total[5m])) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "The rail paid at least one payment twice in the last 5 minutes"
+          description: >-
+            The rail (the outside world) received a second transfer for a payment_id it had already paid.
+            Usually a payout worker timed out and retried. Check worker rail timeouts and recent rollouts.
+      - alert: FailedValueHigh
+        expr: |
+          (sum(rate(pob_settlement_value_usd_total{status="failed"}[5m])) or vector(0))
+            /
+          sum(rate(pob_settlement_value_usd_total{status=~"paid|failed"}[5m])) > 0.005
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of settled USD value failed over 5m"
+          description: Failed payout value is above 0.5% of all settled value.
+  - name: proofofbalance.latency
+    rules:
+      - alert: SlowSettlement
+        expr: histogram_quantile(0.95, sum by (le) (rate(pob_settlement_latency_seconds_bucket[5m]))) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 rail transfer latency is {{ $value | humanizeDuration }}"
+          description: The 95th percentile of payout settlement latency has been above 2s for 5 minutes.
+      - alert: ReconcilerStale
+        expr: time() - max(pob_reconciler_last_success_timestamp_seconds) > 180
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: The ledger reconciler has not completed a check for over 3 minutes
+          description: Without the reconciler, LedgerUnbalanced cannot fire. Check the reconciler pod and database.
