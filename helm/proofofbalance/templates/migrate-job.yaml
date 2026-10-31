@@ -1,0 +1,66 @@
+{{- if .Values.migrations.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pob.name" (dict "ctx" . "component" "migrations") }}
+  labels:
+    {{- include "pob.labels" (dict "ctx" . "component" "migrations") | nindent 4 }}
+data:
+  migrate.sh: |
+    {{- .Files.Get "files/migrate.sh" | nindent 4 }}
+  {{- range $path, $_ := .Files.Glob "files/migrations/*.sql" }}
+  {{ base $path }}: |
+    {{- $.Files.Get $path | nindent 4 }}
+  {{- end }}
+---
+# A fresh Job per Helm revision (Job specs are immutable). Every migration is
+# idempotent, so re-running all of them on each upgrade is safe.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "pob.name" (dict "ctx" . "component" "migrate") }}-{{ .Release.Revision }}
+  labels:
+    {{- include "pob.labels" (dict "ctx" . "component" "migrate") | nindent 4 }}
+spec:
+  backoffLimit: 6
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        {{- include "pob.labels" (dict "ctx" . "component" "migrate") | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: {{ include "pob.image" .Values.images.postgres }}
+          imagePullPolicy: {{ .Values.images.postgres.pullPolicy }}
+          command: ["sh", "/scripts/migrate.sh"]
+          env:
+            - { name: PGHOST, value: {{ include "pob.name" (dict "ctx" . "component" "postgres") | quote }} }
+            - { name: PGUSER, value: {{ .Values.postgres.user | quote }} }
+            - { name: PGDATABASE, value: {{ .Values.postgres.database | quote }} }
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ include "pob.postgresSecret" . }}, key: POSTGRES_PASSWORD }
+            - { name: MIGRATIONS_DIR, value: /migrations }
+            - { name: WAIT_SECONDS, value: {{ .Values.migrations.waitSeconds | quote }} }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          volumeMounts:
+            - { name: migrations, mountPath: /migrations, readOnly: true }
+            - { name: scripts, mountPath: /scripts, readOnly: true }
+      volumes:
+        - name: migrations
+          configMap:
+            name: {{ include "pob.name" (dict "ctx" . "component" "migrations") }}
+            items:
+              {{- range $path, $_ := .Files.Glob "files/migrations/*.sql" }}
+              - { key: {{ base $path }}, path: {{ base $path }} }
+              {{- end }}
+        - name: scripts
+          configMap:
+            name: {{ include "pob.name" (dict "ctx" . "component" "migrations") }}
+            items:
+              - { key: migrate.sh, path: migrate.sh }
+{{- end }}

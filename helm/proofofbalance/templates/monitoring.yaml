@@ -1,0 +1,47 @@
+{{- if .Values.monitoring.podMonitor.enabled }}
+# Scrapes every proofofbalance pod. podTargetLabels copies the Argo Rollouts
+# hash onto every series, so canary and stable metrics can be told apart.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ include "pob.name" (dict "ctx" . "component" "pods") }}
+  labels:
+    {{- include "pob.labels" (dict "ctx" . "component" "monitoring") | nindent 4 }}
+    {{- with .Values.monitoring.labels }}{{ toYaml . | nindent 4 }}{{ end }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/part-of: proofofbalance
+  podTargetLabels:
+    - rollouts-pod-template-hash
+    - app.kubernetes.io/component
+  podMetricsEndpoints:
+    - { port: http, path: /metrics, interval: 15s }      # service, rail
+    - { port: metrics, path: /metrics, interval: 15s }   # worker, reconciler
+{{- end }}
+{{- if .Values.monitoring.prometheusRule.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "pob.name" (dict "ctx" . "component" "alerts") }}
+  labels:
+    {{- include "pob.labels" (dict "ctx" . "component" "monitoring") | nindent 4 }}
+    {{- with .Values.monitoring.labels }}{{ toYaml . | nindent 4 }}{{ end }}
+spec:
+  {{- .Files.Get "files/alert-rules.yaml" | nindent 2 }}
+{{- end }}
+{{- if .Values.monitoring.grafanaDashboard.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pob.name" (dict "ctx" . "component" "dashboard") }}
+  labels:
+    {{- include "pob.labels" (dict "ctx" . "component" "monitoring") | nindent 4 }}
+    grafana_dashboard: "1"
+data:
+  proofofbalance.json: |-
+    {{- .Files.Get "files/grafana-dashboard.json" | nindent 4 }}
+{{- end }}

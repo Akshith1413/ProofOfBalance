@@ -1,0 +1,9 @@
+ProofOfBalance is installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+  API:        kubectl -n {{ .Release.Namespace }} port-forward svc/{{ .Release.Name }}-service 8080:{{ .Values.service.port }}
+  Postgres:   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ .Release.Name }}-postgres 5432:5432
+  Rail:       kubectl -n {{ .Release.Namespace }} port-forward svc/{{ .Release.Name }}-rail 8081:8081
+  Smoke test: helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+{{- if .Values.worker.rollout.enabled }}
+  Canary:     kubectl argo rollouts -n {{ .Release.Namespace }} get rollout {{ .Release.Name }}-worker --watch
+{{- end }}

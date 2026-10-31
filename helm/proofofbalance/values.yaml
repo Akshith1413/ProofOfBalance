@@ -1,0 +1,118 @@
+# Defaults for the proofofbalance chart.
+# values-ci.yaml   small footprint for kind on a GitHub runner (the ledger gate)
+# values-aws.yaml  k3s on EC2: Argo Rollouts canary, trickle traffic, monitoring
+
+images:
+  service: { repository: pob/service, tag: ci, pullPolicy: IfNotPresent }
+  rail: { repository: pob/rail, tag: ci, pullPolicy: IfNotPresent }
+  postgres: { repository: postgres, tag: "16", pullPolicy: IfNotPresent }
+imagePullSecrets: []
+
+# Anything here changes money; the ledger gate will notice.
+settlement:
+  roundingMode: ROUND_HALF_EVEN   # a demo PR changes this to ROUND_HALF_UP
+  timezone: UTC                   # a demo PR changes this to Asia/Kolkata
+  maxUsdAmount: "10000000.00"
+  logLevel: INFO
+
+# Rendered into rates.yaml. Keep every value a quoted string (no YAML floats).
+rates:
+  fee_bps: "20"
+  corridors:
+    USD-INR: "83.25"
+    USD-MXN: "18.2450"
+    USD-BRL: "5.4125"
+
+postgres:
+  user: pob
+  database: pob
+  password: pob            # used only when existingSecret is empty
+  existingSecret: ""       # Secret with key POSTGRES_PASSWORD
+  persistence:
+    enabled: false
+    size: 5Gi
+    storageClass: ""       # "" = cluster default (local-path on k3s)
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 512Mi }
+
+migrations:
+  enabled: true
+  waitSeconds: 300
+
+service:
+  replicas: 1
+  port: 80
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { memory: 256Mi }
+
+worker:
+  replicas: 1
+  threads: 4
+  # One value for CI and production, so the ledger gate tests what will run.
+  railTimeoutMs: 2000
+  maxAttempts: 5
+  retryBaseMs: 500
+  resources:
+    requests: { cpu: 50m, memory: 96Mi }
+    limits: { memory: 192Mi }
+  # Argo Rollouts canary (needs the Argo Rollouts CRDs in the cluster).
+  rollout:
+    enabled: false
+    replicas: 5
+    canaryWeight: 20                # 1 of 5 workers
+    secondWeight: 60
+    pauseAfterSecondWeight: 2m
+    analysis:
+      failedValueRatio: "0.005"     # 0.5% of settled USD value
+      interval: 1m
+      count: 5
+      failureLimit: 1
+      initialDelay: 1m
+
+rail:
+  delayMs: 0
+  delayMsByCurrency: {}    # e.g. { MXN: 300 }: per-currency latency (values-aws.yaml)
+  failPermille: 5          # ~0.5% of payments fail deterministically
+  resources:
+    requests: { cpu: 50m, memory: 96Mi }
+    limits: { memory: 192Mi }
+
+reconciler:
+  enabled: true
+  intervalSeconds: 30
+  resources:
+    requests: { cpu: 10m, memory: 64Mi }
+    limits: { memory: 128Mi }
+
+# Live traffic so a canary always has payments to judge (never in CI).
+trickle:
+  enabled: false
+  rps: 2
+  trafficConfigMap: ""     # ConfigMap holding day1.jsonl.gz; empty = synthetic traffic
+  resources:
+    requests: { cpu: 10m, memory: 64Mi }
+    limits: { memory: 128Mi }
+
+monitoring:
+  podMonitor:
+    enabled: false
+  prometheusRule:
+    enabled: false
+  grafanaDashboard:
+    enabled: false
+  # Labels added to PodMonitor/PrometheusRule so kube-prometheus-stack selects them.
+  labels:
+    release: kube-prometheus-stack
+  prometheusAddress: http://kube-prometheus-stack-prometheus.monitoring:9090
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  seccompProfile: { type: RuntimeDefault }
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: { drop: [ALL] }

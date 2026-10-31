@@ -1,0 +1,58 @@
+{{- $name := include "pob.name" (dict "ctx" . "component" "service") }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "pob.labels" (dict "ctx" . "component" "service") | nindent 4 }}
+spec:
+  selector:
+    {{- include "pob.selector" (dict "ctx" . "component" "service") | nindent 4 }}
+  ports:
+    - { name: http, port: {{ .Values.service.port }}, targetPort: http }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "pob.labels" (dict "ctx" . "component" "service") | nindent 4 }}
+spec:
+  replicas: {{ .Values.service.replicas }}
+  selector:
+    matchLabels:
+      {{- include "pob.selector" (dict "ctx" . "component" "service") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "pob.labels" (dict "ctx" . "component" "service") | nindent 8 }}
+      annotations:
+        checksum/rates: {{ include (print $.Template.BasePath "/configmap-rates.yaml") . | sha256sum }}
+    spec:
+      {{- include "pob.podSpecCommon" . | nindent 6 }}
+      containers:
+        - name: service
+          image: {{ include "pob.image" .Values.images.service }}
+          imagePullPolicy: {{ .Values.images.service.pullPolicy }}
+          command: ["python", "-m", "app.main"]
+          env:
+            {{- include "pob.appEnv" . | nindent 12 }}
+            - { name: PORT, value: "8080" }
+          ports:
+            - { name: http, containerPort: 8080 }
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 3
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            {{- toYaml .Values.service.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            {{- include "pob.ratesMount" . | nindent 12 }}
+      volumes:
+        {{- include "pob.ratesVolume" . | nindent 8 }}

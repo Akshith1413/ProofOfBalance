@@ -1,0 +1,46 @@
+{{- if .Values.worker.rollout.enabled }}
+{{- $a := .Values.worker.rollout.analysis }}
+# Judge the canary on VALUE, not request count: one failed $50,000 payout
+# matters more than a hundred failed $5 ones.
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: {{ include "pob.name" (dict "ctx" . "component" "settlement-value") }}
+  labels:
+    {{- include "pob.labels" (dict "ctx" . "component" "worker") | nindent 4 }}
+spec:
+  args:
+    - name: canary-hash
+  metrics:
+    - name: failed-value-ratio
+      initialDelay: {{ $a.initialDelay }}
+      interval: {{ $a.interval }}
+      count: {{ $a.count }}
+      failureLimit: {{ $a.failureLimit }}
+      # Worst corridor wins: a broken small corridor must not hide inside the
+      # total. "retry" = timed-out attempts made by THIS pod, even if a stable
+      # pod pays the payment later.
+      # No canary payouts -> empty result -> never a pass. That is why the
+      # trickle Deployment keeps live traffic flowing.
+      successCondition: len(result) > 0 && result[0] < {{ $a.failedValueRatio }}
+      provider:
+        prometheus:
+          address: {{ .Values.monitoring.prometheusAddress }}
+          query: |
+            max(
+              (sum by (corridor) (rate(pob_settlement_value_usd_total{status=~"failed|retry",rollouts_pod_template_hash="{{ "{{" }}args.canary-hash{{ "}}" }}"}[2m]))
+                or sum by (corridor) (rate(pob_settlement_value_usd_total{rollouts_pod_template_hash="{{ "{{" }}args.canary-hash{{ "}}" }}"}[2m])) * 0)
+              /
+              sum by (corridor) (rate(pob_settlement_value_usd_total{rollouts_pod_template_hash="{{ "{{" }}args.canary-hash{{ "}}" }}"}[2m]))
+            )
+    - name: no-duplicate-payouts
+      initialDelay: {{ $a.initialDelay }}
+      interval: {{ $a.interval }}
+      count: {{ $a.count }}
+      failureLimit: 0
+      successCondition: result[0] == 0
+      provider:
+        prometheus:
+          address: {{ .Values.monitoring.prometheusAddress }}
+          query: sum(increase(pob_rail_duplicate_transfers_total[2m])) or vector(0)
+{{- end }}
