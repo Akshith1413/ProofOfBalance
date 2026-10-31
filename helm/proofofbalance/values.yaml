@@ -5,7 +5,7 @@
 images:
   service: { repository: pob/service, tag: ci, pullPolicy: IfNotPresent }
   rail: { repository: pob/rail, tag: ci, pullPolicy: IfNotPresent }
-  postgres: { repository: postgres, tag: "16", pullPolicy: IfNotPresent }
+  postgres: { repository: postgres, tag: "17", pullPolicy: IfNotPresent }
 imagePullSecrets: []
 
 # Anything here changes money; the ledger gate will notice.
