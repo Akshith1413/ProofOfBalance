@@ -1,7 +1,7 @@
 # Shortcuts. Every target is a thin wrapper around a script you can run directly.
 PY ?= .venv/bin/python
 
-.PHONY: help venv test test-integration traffic up down gate gate-kind baseline aws-up aws-down aws-pause lint
+.PHONY: help venv test test-integration traffic up down gate gate-kind baseline aws-up aws-down aws-pause aws-test-alerts lint
 
 help:            ## list targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-17s %s\n", $$1, $$2}'
@@ -46,3 +46,6 @@ aws-pause:       ## stop the EC2 instance (keeps everything else)
 
 aws-down:        ## destroy all AWS resources and stop local stacks
 	scripts/teardown.sh
+
+aws-test-alerts: ## prove alerts leave the cluster (Discord/Slack, or an in-cluster receiver)
+	scripts/test-alerts.sh

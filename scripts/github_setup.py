@@ -69,9 +69,15 @@ def main() -> int:
                     "description": "Deliberately accepts a ledger (money) change"})
     print(f"github_setup: label update-baseline: {'ok' if code in (201, 422) else f'FAILED (HTTP {code})'}")
 
-    code, _ = call("PUT", f"/repos/{repo}/environments/production", token, {})
+    # terraform apply waits for a human: the token's owner must approve each run.
+    code, me = call("GET", "/user", token)
+    env = {"reviewers": [{"type": "User", "id": me["id"]}]} if code == 200 and "id" in me else {}
+    code, _ = call("PUT", f"/repos/{repo}/environments/production", token, env)
+    if code != 200 and env:  # e.g. reviewers unavailable for this plan: keep the environment anyway
+        code, _ = call("PUT", f"/repos/{repo}/environments/production", token, {})
+        env = {}
     print(f"github_setup: environment production: {'ok' if code == 200 else f'FAILED (HTTP {code})'}"
-          " (add required reviewers in Settings -> Environments)")
+          + (f" (required reviewer: {me['login']})" if env else " (add required reviewers in Settings -> Environments)"))
 
     code, _ = call("GET", f"/repos/{repo}/branches/main", token)
     if code != 200:
