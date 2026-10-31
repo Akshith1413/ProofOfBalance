@@ -7,7 +7,7 @@ resource "aws_budgets_budget" "monthly" {
 
   # Alert at 80% of actual spend, and when the month is forecast to exceed 100%.
   dynamic "notification" {
-    for_each = var.budget_alert_email == "" ? {} : {
+    for_each = nonsensitive(var.budget_alert_email == "") ? {} : { # reveals only whether an email is set
       ACTUAL     = 80
       FORECASTED = 100
     }

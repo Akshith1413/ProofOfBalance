@@ -151,6 +151,7 @@ variable "budget_alert_email" {
   description = "Email for budget alerts at 80% (actual) and 100% (forecast). Empty = budget without email alerts."
   type        = string
   default     = ""
+  sensitive   = true # plan output is public on a public repo's PRs
 
   validation {
     condition     = var.budget_alert_email == "" || can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.budget_alert_email))
