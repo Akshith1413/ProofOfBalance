@@ -5,7 +5,18 @@
 # certificate already covers. Source common.sh first.
 
 TUNNEL_PORT="${POB_TUNNEL_PORT:-16443}"
-TUNNEL_SOCK="$SECRETS_DIR/ssh-tunnel.sock"
+# The ssh control socket must NOT live in the checkout: Unix socket paths are
+# capped at 108 bytes, and a deeply nested clone exceeds that ("path too long
+# for Unix domain socket"). Use a short per-user directory, keyed by checkout.
+_tunnel_sock_dir() {
+  local base="${XDG_RUNTIME_DIR:-}"
+  [[ -n "$base" && -d "$base" && -w "$base" ]] || base="/tmp"
+  local dir
+  dir="$base/pob-$(id -u)"
+  mkdir -p "$dir" 2>/dev/null && chmod 700 "$dir"
+  printf '%s' "$dir"
+}
+TUNNEL_SOCK="$(_tunnel_sock_dir)/tunnel-$(printf '%s' "$SECRETS_DIR" | sha256sum | cut -c1-12).sock"
 SSH_KEY="${SSH_KEY:-$SECRETS_DIR/pob_ed25519}"
 
 _tunnel_ssh_opts() {
