@@ -1,0 +1,124 @@
+name: terraform
+
+# PRs touching infra/: fmt -check, validate, plan (posted as a PR comment).
+# Apply: only from main, only by hand (workflow_dispatch), only after approval
+# on the protected "production" environment.
+#
+# AWS access is via GitHub OIDC: short-lived credentials per run, no stored keys.
+# Repository variables (Settings -> Secrets and variables -> Actions -> Variables),
+# all printed by `terraform output` after scripts/setup.sh:
+#   AWS_PLAN_ROLE_ARN, AWS_APPLY_ROLE_ARN, TF_STATE_BUCKET,
+#   TF_VAR_MY_IP, TF_VAR_SSH_PUBLIC_KEY, TF_VAR_EXTRA_ADMIN_IPS (JSON list, optional),
+#   TF_VAR_BUDGET_ALERT_EMAIL (optional)
+
+on:
+  pull_request:
+    paths: ["infra/**", ".github/workflows/terraform.yml"]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "apply or destroy"
+        type: choice
+        options: [apply, destroy]
+        default: apply
+
+permissions:
+  contents: read
+  id-token: write        # OIDC
+  pull-requests: write
+
+env:
+  AWS_REGION: ap-south-1
+  TF_IN_AUTOMATION: "true"
+  TF_VAR_my_ip: ${{ vars.TF_VAR_MY_IP }}
+  TF_VAR_extra_admin_ips: ${{ vars.TF_VAR_EXTRA_ADMIN_IPS || '[]' }}
+  TF_VAR_ssh_public_key: ${{ vars.TF_VAR_SSH_PUBLIC_KEY }}
+  TF_VAR_budget_alert_email: ${{ vars.TF_VAR_BUDGET_ALERT_EMAIL }}
+  TF_VAR_github_repo: ${{ github.repository }}
+
+defaults:
+  run:
+    working-directory: infra/terraform
+
+jobs:
+  plan:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with: { terraform_version: "1.17.1", terraform_wrapper: false }
+
+      - name: terraform fmt -check
+        run: terraform fmt -check -recursive -diff
+
+      - name: terraform validate
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+      - name: Is AWS configured for this repo?
+        id: aws
+        run: |
+          if [[ -n "${{ vars.AWS_PLAN_ROLE_ARN }}" && -n "${{ vars.TF_STATE_BUCKET }}" ]]; then echo "ok=true" >> "$GITHUB_OUTPUT";
+          else echo "ok=false" >> "$GITHUB_OUTPUT"; echo "::notice::AWS_PLAN_ROLE_ARN / TF_STATE_BUCKET not set; skipping plan."; fi
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        if: steps.aws.outputs.ok == 'true'
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: terraform plan
+        id: plan
+        if: steps.aws.outputs.ok == 'true'
+        run: |
+          terraform init -input=false -reconfigure \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" -backend-config="region=${AWS_REGION}"
+          set +e
+          terraform plan -input=false -no-color -lock-timeout=2m -out=tfplan > plan.txt 2>&1
+          rc=$?
+          set -e
+          cat plan.txt
+          {
+            echo "### Terraform plan $([[ $rc -eq 0 ]] && echo '✅' || echo '❌ failed')"
+            echo
+            echo '<details><summary>Show plan</summary>'
+            echo
+            echo '```'
+            grep -vE '^\s*$' plan.txt | tail -c 60000
+            echo '```'
+            echo '</details>'
+          } > plan.md
+          exit $rc
+
+      - name: Comment plan on PR
+        if: always() && steps.plan.outcome != 'skipped'
+        continue-on-error: true
+        working-directory: .
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: scripts/ci/pr_comment.sh "${{ github.event.pull_request.number }}" infra/terraform/plan.md terraform-plan
+
+  apply:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production   # add required reviewers to this environment
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with: { terraform_version: "1.17.1", terraform_wrapper: false }
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: terraform ${{ inputs.action }}
+        run: |
+          terraform init -input=false -reconfigure \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" -backend-config="region=${AWS_REGION}"
+          if [[ "${{ inputs.action }}" == "destroy" ]]; then
+            terraform destroy -input=false -auto-approve -lock-timeout=5m
+          else
+            terraform apply -input=false -auto-approve -lock-timeout=5m
+          fi
