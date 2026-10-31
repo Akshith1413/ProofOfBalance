@@ -28,15 +28,10 @@ scripts/kind-gate.sh --set settlement.timezone=Asia/Kolkata
 scripts/kind-gate.sh --set rail.failPermille=50
 ```
 
-### Demo pull requests for the GitHub UI
+### Demo pull requests
 
-1. Branch `demo/readme-only`: edit `README.md` only. **ledger-gate** finishes in seconds as *skipped* (green).
-2. Branch `demo/harmless`: raise `service.resources.limits.memory` in `values-ci.yaml`. Full replay, **passes**.
-3. Branch `demo/rounding`: set `settlement.roundingMode: ROUND_HALF_UP` in `helm/proofofbalance/values.yaml`.
-   **Fails**, and the PR comment shows the per-corridor table.
-4. Branch `demo/timezone`: set `settlement.timezone: Asia/Kolkata`. **Fails** with *value date changed*.
-5. Branch `demo/sneaky-baseline`: run 3, then also commit the new `baseline/ledger_baseline.csv` without the
-   `update-baseline` label. **Fails**: baseline changes need the label.
+Six real PRs on GitHub show both gates working; the table with links and results is in the
+[README](../README.md#demo-pull-requests). To re-create one, branch from `main`, make the one-line change, open a PR.
 
 ---
 

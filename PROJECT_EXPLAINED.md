@@ -41,7 +41,7 @@ or promote anything where the answer is no.
 
 ### 3.1 What it does
 
-A small FX settlement API (Python 3.12, FastAPI, PostgreSQL 16) that pays out US dollars as Indian rupees,
+A small FX settlement API (Python 3.12, FastAPI, PostgreSQL 17) that pays out US dollars as Indian rupees,
 Mexican pesos or Brazilian reais. Corridors: `USD-INR`, `USD-MXN`, `USD-BRL`.
 
 * `POST /payments` accepts a payment and writes it **plus five ledger postings in one transaction**.
@@ -246,7 +246,7 @@ One chart deploys to kind (CI) and k3s (AWS):
 
 | Template | What |
 |---|---|
-| `postgres.yaml` | StatefulSet with official `postgres:16`, PVC on AWS (retained on uninstall), emptyDir in CI |
+| `postgres.yaml` | StatefulSet with official `postgres:17` (upgraded from 16 in demo PR #1), PVC on AWS (retained on uninstall), emptyDir in CI |
 | `migrate-job.yaml` | a new Job per Helm revision running every idempotent migration in one transaction, behind an advisory lock |
 | `service.yaml` | API Deployment + Service (`pob-service`), readiness on `/readyz` |
 | `worker.yaml` | payout worker: plain Deployment, or an **Argo Rollout** with 5 replicas when `worker.rollout.enabled` |
@@ -329,13 +329,21 @@ payouts. No Istio needed.
 The PodMonitor copies the `rollouts-pod-template-hash` pod label onto every metric, so Prometheus can tell
 canary from stable. The AnalysisTemplate then measures, every minute for 5 minutes:
 
-* **failed-value-ratio**: `failed USD value / all USD value` *for the canary's hash only*, must stay `< 0.005`.
+* **failed-value-ratio**: for the canary's hash only, per corridor, `USD value of failed or timed-out attempts /
+  USD value of all attempts`; the *worst* corridor must stay `< 0.005`. A timed-out attempt (status `retry`) counts
+  against the pod that made it, even if a stable pod pays that payment later. Without that, a canary that times
+  out every MXN payout looks healthy: its retries get finished by stable pods (demo PR #6 is exactly this).
 * **no-duplicate-payouts**: `increase(pob_rail_duplicate_transfers_total[2m])` must be `0`.
 
 Steps: 20% → analysis → 60% → pause 2 min → 100%. Any failed analysis aborts and scales the canary away.
 
 **Why value, not request count:** one failed $50,000 payout matters more than a hundred failed $5 ones.
-Measuring failed value is how a payments company actually thinks about risk.
+Measuring failed value is how a payments company actually thinks about risk. **Why per corridor:** MXN is about a
+third of the traffic; a corridor that is completely broken must not hide inside a healthy-looking total.
+
+**What CI cannot see:** on AWS the MXN rail answers in ~300 ms (`rail.delayMsByCurrency` in `values-aws.yaml`);
+in CI the mock rail answers instantly. A worker timeout of 100 ms therefore passes the ledger gate and fails in
+production, which is why the canary layer exists.
 
 **Why the trickle exists:** with no payments the ratio is 0/0, and the analysis fails instead of passing.
 The trickle Deployment replays `day1.jsonl` slowly in a loop with fresh idempotency keys, mounted from a

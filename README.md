@@ -1,178 +1,145 @@
 # ProofOfBalance
 
-**A CI gate that blocks any infrastructure change that would move money in the ledger, even by one paisa.**
+**A CI gate that blocks infrastructure changes that would move money in a ledger.**
 
-Most teams test an infra change by asking *"is the service still up?"*. ProofOfBalance asks
-*"is every balance still exactly the same?"*. Every pull request replays one recorded day of
-payment traffic on a throwaway Kubernetes cluster and diffs the resulting double-entry ledger
-against a committed baseline. In production, Argo Rollouts promotes a release only while the
-**value** of failed settlements stays under 0.5% and the payout rail sees **zero** duplicate payouts.
+![architecture: two gates stop a money change](docs/architecture.svg)
 
-![architecture](docs/architecture.svg)
+**[Demo PR #3](https://github.com/Akshith1413/ProofOfBalance/pull/3) moves settlement to IST. It sounds harmless. The gate says otherwise:**
 
-For a full walk-through of how and why everything works, read **[PROJECT_EXPLAINED.md](PROJECT_EXPLAINED.md)**.
-What was actually run and verified (tests, gate scenarios, a real canary promotion and a real rollback on AWS)
-is in **[docs/results.md](docs/results.md)**.
+![Ledger gate comment on PR #3: 1,246 payments change value date](docs/screenshots/pr3-ist-fails.png)
 
----
+## How it works
 
-## Quick start
+- **Deterministic ledger service.** `Decimal` money (a float raises), `uuid5` ids, timestamps from the request, rounding mode and
+  settlement time zone from config: the same traffic always produces the same double-entry ledger, byte for byte.
+- **One recorded day of traffic.** `traffic/day1.jsonl` holds 5,000 payments from a fixed seed, with half-cent amounts, retried
+  idempotency keys and an evening burst that crosses midnight IST.
+- **Gate 1, before merge.** Every PR boots the chart on a throwaway kind cluster, replays the day, exports every posting plus how many
+  transfers the *rail* received, and diffs that against `baseline/ledger_baseline.csv`. Any difference fails the required check and the PR
+  comment says which corridor, how much and what kind.
+- **Gate 2, in production.** Payout workers ship as an Argo Rollouts canary on k3s (AWS). The canary is judged on **value**: rolled
+  back if its failed or timed-out USD value in any corridor exceeds 0.5%, or if the rail sees a single duplicate payout.
+- **Everything is reproducible.** `scripts/setup.sh` builds the whole AWS environment in one idempotent run; `scripts/teardown.sh`
+  destroys it and verifies nothing is still billing. Both write a plain-English status file when something fails.
 
-### 1. Local (no AWS, ~5 minutes)
+## Demo pull requests
+
+Real PRs, left visible. Each ran the full gate on GitHub Actions.
+
+| # | PR | What it changes | Result |
+|---|---|---|---|
+| 1 | [Bump Postgres 16 → 17](https://github.com/Akshith1413/ProofOfBalance/pull/1) | image tag in Helm values | ✅ passed: 38,764 ledger rows identical. **Merged** |
+| 2 | [Use HALF_UP rounding](https://github.com/Akshith1413/ProofOfBalance/pull/2) | `ROUNDING_MODE` in Helm values | ❌ 454 half-cent payments change amount in all three corridors. Closed |
+| 3 | [Settle in IST](https://github.com/Akshith1413/ProofOfBalance/pull/3) | `SETTLEMENT_TZ=Asia/Kolkata` | ❌ 1,246 payments after 18:30 UTC move to the next value date. Closed |
+| 4 | [Scale payout workers 1 → 4](https://github.com/Akshith1413/ProofOfBalance/pull/4) | replica count | ✅ passed, thanks to `FOR UPDATE SKIP LOCKED`. **Merged** |
+| 5 | [Simplify worker query + 4 workers](https://github.com/Akshith1413/ProofOfBalance/pull/5) | removes `SKIP LOCKED` | ❌ 4,834 payments paid more than once at the rail (up to 6×), while unit tests passed and the ledger still balanced. Closed |
+| 6 | [Lower rail timeout (worker v2)](https://github.com/Akshith1413/ProofOfBalance/pull/6) | `RAIL_TIMEOUT_MS` 2000 → 100 | ✅ passed CI, **merged**, then Argo **rolled it back on AWS** within a minute: the MXN rail answers in 300 ms, so the canary's MXN failed value hit 100% (limit 0.5%) and the rail saw duplicate payouts. Reverted in [#7](https://github.com/Akshith1413/ProofOfBalance/pull/7) |
+
+![All demo PRs with their required checks](docs/screenshots/demo-prs-checks.png)
+
+PR 3 is the one to remember: moving to IST sounds harmless, especially for a team in India, and it silently moves money between
+settlement days. PR 6 is why both layers exist: CI cannot see a timeout that only happens under real latency.
+
+<details><summary>More screenshots: PR 5 (duplicate payouts), PR 2 (rounding), PR 1 (pass)</summary>
+
+![PR 5: duplicate payouts at the rail](docs/screenshots/pr5-duplicate-payouts.png)
+![PR 2: half-up rounding changes amounts](docs/screenshots/pr2-half-up-fails.png)
+![PR 1: Postgres 17 passes](docs/screenshots/pr1-postgres17-passes.png)
+
+</details>
+
+### PR 6 on AWS: the canary is rolled back
+
+Merged with a green check, deployed with `scripts/setup.sh`. Argo sent 1 of 5 payout workers to the new version and
+aborted it after the first analysis, about a minute later:
+
+| Analysis metric (canary pods only) | Measured | Limit |
+|---|---|---|
+| `failed-value-ratio`, worst corridor | **1.0**: 100% of the canary's MXN payout value timed out | < 0.005, one bad measurement tolerated |
+| `no-duplicate-payouts` | **16.6** duplicate transfers at the rail in 2 minutes | 0, so **rollout aborted** |
+
+`kubectl argo rollouts get rollout pob-worker` right after the abort: canary scaled down, stable still serving.
+
+![Argo Rollouts aborted the worker v2 canary](docs/screenshots/argo-rollback.png)
+
+Grafana during the rollback: the canary's MXN line (purple) at 100% failed value, every stable corridor at 0%.
+
+![Grafana: failed value ratio per corridor, canary vs stable](docs/screenshots/grafana-canary-mxn.png)
+
+<details><summary>Full dashboard and the AnalysisRun</summary>
+
+![Grafana dashboard during the rollback](docs/screenshots/grafana-rollback.png)
+![AnalysisRun status: both measurements failed](docs/screenshots/argo-analysisrun.png)
+
+</details>
+
+## Run it yourself
+
+Needs Docker and Python 3.12. No cloud account.
 
 ```bash
-make venv          # Python deps into .venv
-make test          # unit tests, no Docker needed
-make up            # docker compose: Postgres, API, 2 payout workers, rail, reconciler + smoke test
-make gate          # the ledger gate on your laptop: replay 5,000 payments, diff vs baseline -> PASS
-make gate ARGS="ROUNDING_MODE=ROUND_HALF_UP"   # a money-moving change -> FAIL with a per-corridor report
-make down
+make venv        # Python dependencies into .venv
+docker compose up -d --build --wait
+make replay      # replay traffic/day1.jsonl against the local stack, export the ledger
+make diff        # diff it against baseline/ledger_baseline.csv -> PASS
 ```
 
-### 2. AWS (one command up, one command down)
+Then make a money change and watch it fail:
 
-1. Put credentials in `.env` (copy `.env.example`; `.env` is git-ignored).
-   Optional but recommended: `BUDGET_ALERT_EMAIL`, and `DISCORD_WEBHOOK_URL` or `SLACK_WEBHOOK_URL` for alerts.
-2. Create everything:
+```bash
+make gate ARGS="SETTLEMENT_TZ=Asia/Kolkata"    # fresh stack + replay + diff -> FAIL, per-corridor report
+make gate-kind ARGS="--set settlement.roundingMode=ROUND_HALF_UP"   # the exact CI path on a local kind cluster
+make test        # 200+ unit tests, no Docker needed
+```
 
-   ```bash
-   scripts/setup.sh
-   ```
+## Deploy to AWS
 
-   It installs missing CLIs (pinned, checksum-verified) into `.tools/bin`, creates the S3 state bucket,
-   runs Terraform (VPC, EC2 + k3s, Elastic IP, GitHub OIDC roles, $10 budget), installs
-   kube-prometheus-stack and Argo Rollouts, builds and ships the images, deploys the chart, and runs a
-   smoke payment. **Re-running it is always safe**: it repairs whatever is missing and resumes a paused instance.
-3. Stop paying:
+Put your AWS keys in `.env` (copy `.env.example`; it is git-ignored), then:
 
-   ```bash
-   scripts/teardown.sh            # destroy everything (keeps only the tiny state bucket), verify nothing bills
-   scripts/teardown.sh --pause    # or just stop the instance; setup.sh resumes it
-   ```
+```bash
+scripts/setup.sh       # one idempotent run: Terraform, k3s, monitoring, Argo Rollouts, images, Helm, smoke test
+scripts/teardown.sh    # terraform destroy, then verify by tag that nothing is left billing
+```
 
-Every run writes `logs/<script>-<time>.log` and `logs/<script>-status.txt`. When something fails, the status
-file says **which stage failed, what it means, and what to do**, followed by the last 40 log lines.
+What `setup.sh` runs, if you prefer the individual commands:
 
-| | Approximate cost (ap-south-1, on-demand) |
-|---|---|
-| Running (t3.medium or m7i-flex.large + 30 GB gp3 + Elastic IP) | ~$1.25–2.00 / day |
-| Paused (`--pause`: disk + Elastic IP) | ~$0.20 / day |
-| Destroyed (state bucket only) | < $0.01 / month |
+```bash
+terraform -chdir=infra/terraform init -backend-config="bucket=<state bucket>" -backend-config="region=ap-south-1"
+terraform -chdir=infra/terraform apply
+helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack -n monitoring --create-namespace \
+  -f monitoring/kube-prometheus-stack-values.yaml
+helm upgrade --install argo-rollouts argo/argo-rollouts -n argo-rollouts --create-namespace
+helm upgrade --install pob helm/proofofbalance -n pob --create-namespace -f helm/proofofbalance/values-aws.yaml
+terraform -chdir=infra/terraform destroy
+```
 
-**AWS Free-plan accounts** (created after July 2025) can only launch Free-Tier-eligible instance types, and
-t3.medium is not one. `setup.sh` reads the account plan and switches to **m7i-flex.large** (2 vCPU, 8 GB,
-eligible) automatically; usage is then drawn from the plan's credits.
+Both scripts were tested from a clean clone (only `.env` copied in): destroy, a full rebuild, and a final destroy.
+If a run fails, `logs/setup-status.txt` names the stage, explains it, shows the failing command and says what to do;
+re-running is always safe. Other tools: `scripts/teardown.sh --pause` (stop the instance, keep everything),
+`scripts/tunnel.sh` (kubectl over SSH when port 6443 is blocked), `scripts/test-alerts.sh` (prove alerts reach
+Discord/Slack). Running costs about $1.25–2 a day; destroyed, under a cent a month.
+
+## Design decisions
+
+- **Why `Decimal`.** `0.1 + 0.2 != 0.3` in floating point, and a ledger that is off by a fraction of a cent is wrong, not
+  approximately right. Every amount is a `Decimal` in Python and `NUMERIC` in Postgres; a float anywhere raises.
+- **Why `uuid5`.** Ids derived from the idempotency key (instead of random `uuid4`) make the same request produce the same row on
+  every run. That is what lets two replays be compared byte for byte, and it makes retries idempotent for free.
+- **Why value-weighted canaries.** One failed $50,000 payout matters more than a hundred failed $5 ones, so the canary is judged on
+  failed USD value, per corridor (a broken small corridor must not hide inside the total). Timed-out attempts count against the pod
+  that made them even if a stable pod pays later; otherwise PR 6 would have looked healthy.
+- **Why OIDC.** GitHub Actions gets short-lived AWS credentials per run instead of stored keys: a read-only plan role for PRs, and an
+  apply role only the protected `production` environment (with a required reviewer) can assume.
+
+## What I'd do next
+
+- **Multi-region:** a second k3s cluster and Postgres replica in another region, with the gate replaying against both.
+- **A real testnet stablecoin rail:** replace the mock with USDC on a testnet, where duplicate payouts are visible on-chain.
+- **Loki:** ship the JSON logs to Loki so a rollback links straight to the failing payments' log lines.
 
 ---
 
-## How the gate works
-
-1. **Deterministic service.** `Decimal` everywhere (a float raises), `uuid5` ids from the idempotency key,
-   timestamps from the request, rates from a fixed ConfigMap, rounding from `ROUNDING_MODE`, value date from
-   `SETTLEMENT_TZ`. The same input always produces the same ledger, byte for byte.
-2. **Recorded traffic.** `traffic/day1.jsonl`: 5,000 payments seeded with `random.Random(42)`, with awkward
-   amounts (0.01, 999,999.99, exact half cents), 3% retried idempotency keys, and a burst just past midnight IST.
-3. **Replay → export → diff.** `tools/replay.py` (8 parallel workers, so retries race),
-   `tools/export_ledger.py` (sorted CSV, plus one row per payment with the number of transfers the
-   *rail* received), `tools/diff_ledger.py` (classifies every difference, checks every payment still sums to
-   zero per currency, writes the PR comment).
-4. **Required check.** `.github/workflows/ledger-gate.yml` runs on every PR; `dorny/paths-filter` skips the
-   heavy replay for docs-only changes so the required check never hangs.
-
-Example PR comment (actual output for `ROUNDING_MODE=ROUND_HALF_UP`):
-
-```
-### Ledger gate: FAILED — 3 corridors changed
-
-| Corridor | Payments affected | Net change | Kind |
-|---|---|---|---|
-| USD-BRL | 48 | +0.03 BRL, +0.07 USD | amount changed |
-| USD-INR | 339 | -10.94 INR, +0.17 USD | amount changed |
-| USD-MXN | 67 | -5.90 MXN, +0.34 USD | amount changed |
-
-Invariant check: passed (every payment still balances)
-```
-
----
-
-## Repository layout
-
-```
-service/            settlement API, payout worker, reconciler, trickle (FastAPI, one image) + Dockerfile
-rail/               mock stablecoin rail (deterministic failures, counts duplicate payouts) + Dockerfile
-db/migrations/      SQL schema (idempotent) + migrate.sh
-traffic/            generator.py, day1.jsonl (the recorded traffic, committed)
-tools/              replay.py, export_ledger.py, diff_ledger.py
-baseline/           ledger_baseline.csv (committed; change only in a PR labelled update-baseline)
-helm/proofofbalance chart: service, worker (Deployment or Argo Rollout), rail, postgres, migration Job,
-                    reconciler, trickle, PodMonitor, PrometheusRule, AnalysisTemplate, Grafana dashboard
-infra/terraform/    VPC, security group, EC2 + k3s, Elastic IP, OIDC roles, budget, S3 backend
-monitoring/         Grafana dashboard JSON, alert rules, kube-prometheus-stack values
-.github/workflows/  ledger-gate.yml, build.yml, terraform.yml
-scripts/            setup.sh, teardown.sh, local-gate.sh, kind-gate.sh, ci/gate.sh, helpers
-tests/              unit (no Docker) and integration (against docker compose)
-docs/               architecture.svg, game-day.md, results.md
-```
-
----
-
-## Commands
-
-| Goal | Command |
-|---|---|
-| Unit tests | `make test` |
-| Integration tests (stack running) | `make up && make test-integration` |
-| Ledger gate on docker compose | `scripts/local-gate.sh [KEY=VALUE ...]` |
-| Exact CI gate on a local kind cluster | `scripts/kind-gate.sh [--set key=value ...]` |
-| Re-record the baseline | `scripts/local-gate.sh --update-baseline` → PR labelled `update-baseline` |
-| Verify the traffic file is reproducible | `python traffic/generator.py --check` |
-| AWS up / pause / down | `scripts/setup.sh` / `scripts/teardown.sh --pause` / `scripts/teardown.sh` |
-| kubectl through SSH (networks that block 6443) | `scripts/tunnel.sh start` / `stop` / `status` |
-| Watch a canary | `kubectl argo rollouts -n pob get rollout pob-worker --watch` |
-| Grafana | `kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80` |
-
-Overridable knobs for `local-gate.sh`: `ROUNDING_MODE`, `SETTLEMENT_TZ`, `RAIL_DELAY_MS`, `RAIL_FAIL_PERMILLE`,
-`RAIL_TIMEOUT_MS`, and the host ports `POB_SERVICE_PORT`, `POB_RAIL_PORT`, `POB_PG_PORT`.
-
----
-
-## GitHub setup (once)
-
-1. Push this repository to `github.com/Akshith1413/ProofOfBalance`.
-2. Settings → Branches → protect `main` → require the status checks **`unit-tests`** and **`ledger-gate`**.
-   Without that, the gate is only advice.
-3. Create the label **`update-baseline`**, and an environment **`production`** with yourself as required reviewer.
-4. After `scripts/setup.sh`, add repository *variables* `AWS_PLAN_ROLE_ARN`, `AWS_APPLY_ROLE_ARN`,
-   `TF_STATE_BUCKET`, `TF_VAR_MY_IP`, `TF_VAR_SSH_PUBLIC_KEY` (values are printed in `logs/setup-status.txt`).
-
-Steps 2–4 happen automatically if you put a fine-grained `GITHUB_TOKEN` (Administration + Variables:
-read/write on this repo) in `.env` before running `scripts/setup.sh`.
-
-`build.yml` pushes `ghcr.io/akshith1413/proofofbalance-{service,rail}:<sha>` on every merge; set
-`IMAGE_SOURCE=ghcr` (and `IMAGE_TAG=<sha>`) in `.env` to deploy those instead of locally built images.
-
----
-
-## Troubleshooting
-
-| Symptom | Fix |
-|---|---|
-| `setup FAILED at stage "Check AWS credentials"` | Key deactivated or mistyped. Create a new access key, update `.env`. |
-| `not eligible for Free Tier` | Free-plan account: set `INSTANCE_TYPE=m7i-flex.large` (setup.sh normally does this for you). |
-| Terraform `AccessDenied` / `UnauthorizedOperation` | The IAM user needs EC2, IAM (roles, OIDC provider), Budgets and S3. |
-| `cannot SSH` / Kubernetes API unreachable | Your public IP changed. Re-run `scripts/setup.sh` (it updates the security group). Networks that rotate between several public IPs are detected and every one is allowed as a `/32`; you can also list them in `MY_IP=a.b.c.d,e.f.g.h`. |
-| `connection refused` on port 6443 | Your network blocks outbound 6443. `setup.sh` detects this and switches kubectl to an SSH tunnel (`127.0.0.1:16443`); after a reboot run `scripts/tunnel.sh start`. |
-| State lock error | Another run is in progress, or one was killed: `terraform -chdir=infra/terraform force-unlock <ID>`. |
-| `ImagePullBackOff` with `IMAGE_SOURCE=ghcr` | The image is private or not built yet: set `GHCR_TOKEN`, or use `IMAGE_SOURCE=local`. |
-| Gate fails with only *value date changed* | Someone changed `SETTLEMENT_TZ`; that is a real money change. |
-| Teardown says resources are still billing | `scripts/teardown.sh --force-cleanup`. |
-
-## Security notes
-
-* `.env`, `.secrets/` (SSH key, kubeconfig, generated passwords) and Terraform state never enter git.
-* CI uses GitHub OIDC: short-lived AWS credentials per run, a read-only plan role for PRs, and an apply role
-  only the protected `production` environment can assume.
-* SSH (22) and the Kubernetes API (6443) are open only to your public IP(s), each as an exact `/32`. IMDSv2 is enforced and EBS is encrypted.
-* Containers run as non-root with a read-only root filesystem and all capabilities dropped.
-* If AWS keys were ever pasted into a chat, ticket or log, **rotate them**: create a new access key in IAM,
-  update `.env`, delete the old key.
+<sub>Deeper reading: [PROJECT_EXPLAINED.md](PROJECT_EXPLAINED.md) (how and why everything works),
+[docs/results.md](docs/results.md) (everything that was run and verified), [docs/game-day.md](docs/game-day.md) (failure drills).
+Security: `.env`, `.secrets/` and Terraform state never enter git; SSH and the Kubernetes API are open only to your IPs as `/32`s;
+containers run as non-root with read-only filesystems.</sub>

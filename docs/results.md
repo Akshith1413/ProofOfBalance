@@ -30,6 +30,22 @@ docker compose**: the ledger does not depend on where it runs.
 | Worker timeout 100 ms < rail latency 300 ms | docker compose | FAIL: 4,850 *duplicate payouts* (each paid 5× at the rail) |
 | Rail failure rate 5‰ → 50‰ | docker compose | FAIL: 225 payments *status changed*, payout legs *missing* |
 
+## Gate 1 on GitHub: the demo pull requests
+
+Each PR ran `unit-tests` and `ledger-gate` (required checks on `main`) on GitHub-hosted runners: kind cluster,
+Helm chart, full replay of 5,000 payments, diff against the baseline.
+
+| PR | Change | ledger-gate | Outcome |
+|---|---|---|---|
+| [#1](https://github.com/Akshith1413/ProofOfBalance/pull/1) | Postgres 16 → 17 | ✅ 38,764 rows identical | merged |
+| [#2](https://github.com/Akshith1413/ProofOfBalance/pull/2) | `ROUND_HALF_UP` | ❌ INR 339 / MXN 67 / BRL 48 payments, *amount changed* | closed |
+| [#3](https://github.com/Akshith1413/ProofOfBalance/pull/3) | `SETTLEMENT_TZ=Asia/Kolkata` | ❌ INR 618 / MXN 381 / BRL 247 payments, *value date changed* | closed |
+| [#4](https://github.com/Akshith1413/ProofOfBalance/pull/4) | 4 worker replicas | ✅ identical (passed twice: branch was updated after #1 merged) | merged |
+| [#5](https://github.com/Akshith1413/ProofOfBalance/pull/5) | no `SKIP LOCKED` + 4 workers | ❌ 4,834 payments paid 2–6× at the rail; unit tests green, ledger balanced | closed |
+| [#6](https://github.com/Akshith1413/ProofOfBalance/pull/6) | rail timeout 2000 → 100 ms | ✅ identical (CI's rail answers instantly) | merged, then rolled back on AWS (below) |
+
+The kind results match the docker compose results above exactly (454 and 1,246 payments).
+
 ## Gate 2: in production (AWS)
 
 Environment created by `scripts/setup.sh`: m7i-flex.large (Free-plan account), k3s v1.36,
@@ -46,6 +62,20 @@ kube-prometheus-stack, Argo Rollouts, ProofOfBalance with 5 Rollout workers and 
 | `teardown.sh --pause`, then `setup.sh` | instance stopped (verified via EC2 API), then started again; data and images kept; smoke test passed | ✔ |
 | `teardown.sh` (destroy) | 28 resources destroyed in ~70 s; tag scan: **0 resources left**; state bucket kept | ✔ |
 | `setup.sh` from scratch after destroy | one run, no manual steps: 28 resources, k3s, monitoring, Argo, app, smoke payment paid, in ~10 min | ✔ |
+
+### Second round: clean clone, demo PR 6, alerts (same day)
+
+Run from a fresh `git clone` of the GitHub repository with only `.env` copied in (no `.secrets/`, `.tools/`, `.venv/`).
+
+| Exercise | What happened | Verdict |
+|---|---|---|
+| `teardown.sh` from the clean clone | no local tools yet: installed them, read the S3 state, destroyed 28 resources, tag scan found 0 left | ✔ |
+| `setup.sh` from the clean clone | 28 resources created, then failed at *Wait for k3s* with a clear status file: the SSH control socket path was too long for a deeply nested clone (bug, fixed and tested) | ✔ failure explained |
+| `setup.sh` re-run after the fix | Terraform "0 added, 0 changed", tunnel up, Postgres **17** fresh, MXN rail delay 300 ms, smoke payment paid, GitHub variables set, budget emails configured | ✔ resumed |
+| Demo PR 6 deployed (`railTimeoutMs` 100) | canary 1 of 5 workers; first analysis: `failed-value-ratio` **1.0** (MXN, limit 0.005, one strike tolerated), `no-duplicate-payouts` **16.6** (limit 0) → **RolloutAborted ~1 min after the canary started**, canary scaled to 0, stable kept serving, `pob_ledger_unbalanced_payments` 0 | ✔ rolled back |
+| `scripts/test-alerts.sh` (no webhook configured) | in-cluster receiver got both the test alert **and the real `DuplicatePayout` alert from PR 6**, in Discord (`embeds`) and Slack (`attachments`) formats; Alertmanager config rolled back afterwards | ✔ delivered |
+| Grafana | read-only anonymous viewer through `port-forward` (no password handled); canary-vs-stable panel shows the canary's MXN line at 100% | ✔ |
+| Budget email in public plan output | `terraform plan` shows the notification blocks as *sensitive*, the address is not printed | ✔ |
 
 ## Problems found while running it for real (and fixed)
 
@@ -65,4 +95,8 @@ covered by a test or a validation where possible.
 | Generated secrets file became world-readable | `generated.env` mode 644 | written under `umask 077` (test added) |
 | Docker Desktop image ids change on every build | images re-uploaded every run | tag by source-content hash |
 | `kind load` of multi-platform `postgres:16` | `content digest not found` | side-load is best-effort; cluster pulls it otherwise |
+| SSH control socket inside the checkout | `path too long for Unix domain socket` from a clone in a long path | socket in `$XDG_RUNTIME_DIR/pob-$UID/`, keyed by a hash of the checkout (test added) |
+| `teardown.sh` on a fresh clone | said "kind gate clusters stopped" without checking (kind not installed yet) | kind clusters found by container label; reports what it removed |
+| Canary that times out but never fails *terminally* | its retries were paid by stable pods, so failed value looked like 0 | timed-out attempts count as `retry` value against the pod that made them; analysis takes the worst corridor |
+| Budget email in Terraform plan | would be printed in public PR comments | variable is `sensitive` |
 | `helm test --logs` after hook deletion | "pod not found" although the test passed | test pod kept until the next run |
