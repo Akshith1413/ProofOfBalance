@@ -10,8 +10,8 @@ imagePullSecrets: []
 
 # Anything here changes money; the ledger gate will notice.
 settlement:
-  roundingMode: ROUND_HALF_EVEN   # a demo PR changes this to ROUND_HALF_UP
-  timezone: UTC                   # a demo PR changes this to Asia/Kolkata
+  roundingMode: ROUND_HALF_EVEN   # banker's rounding: a half-cent goes to the even cent
+  timezone: UTC                   # value dates are UTC calendar days
   maxUsdAmount: "10000000.00"
   logLevel: INFO
 
