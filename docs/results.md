@@ -75,6 +75,9 @@ Run from a fresh `git clone` of the GitHub repository with only `.env` copied in
 | Demo PR 6 deployed (`railTimeoutMs` 100) | canary 1 of 5 workers; first analysis: `failed-value-ratio` **1.0** (MXN, limit 0.005, one strike tolerated), `no-duplicate-payouts` **16.6** (limit 0) → **RolloutAborted ~1 min after the canary started**, canary scaled to 0, stable kept serving, `pob_ledger_unbalanced_payments` 0 | ✔ rolled back |
 | `scripts/test-alerts.sh` (no webhook configured) | in-cluster receiver got both the test alert **and the real `DuplicatePayout` alert from PR 6**, in Discord (`embeds`) and Slack (`attachments`) formats; Alertmanager config rolled back afterwards | ✔ delivered |
 | Grafana | read-only anonymous viewer through `port-forward` (no password handled); canary-vs-stable panel shows the canary's MXN line at 100% | ✔ |
+| Revert PR #7 deployed | Argo returned the workers to the stable template; rollout **Healthy** | ✔ |
+| `setup.sh` re-run while another terminal runs kubectl every 3 s | Terraform "No changes", images already on the node; **114 kubectl calls, 0 failed** (after the kubeconfig-probe fix) | ✔ idempotent, non-disruptive |
+| Final `teardown.sh` from the clean clone | 28 resources destroyed in 77 s, tunnel closed, tag scan: 0 left | ✔ |
 | Budget email in public plan output | `terraform plan` shows the notification blocks as *sensitive*, the address is not printed | ✔ |
 
 ## Problems found while running it for real (and fixed)
@@ -98,5 +101,6 @@ covered by a test or a validation where possible.
 | SSH control socket inside the checkout | `path too long for Unix domain socket` from a clone in a long path | socket in `$XDG_RUNTIME_DIR/pob-$UID/`, keyed by a hash of the checkout (test added) |
 | `teardown.sh` on a fresh clone | said "kind gate clusters stopped" without checking (kind not installed yet) | kind clusters found by container label; reports what it removed |
 | Canary that times out but never fails *terminally* | its retries were paid by stable pods, so failed value looked like 0 | timed-out attempts count as `retry` value against the pod that made them; analysis takes the worst corridor |
+| setup rewrote the live kubeconfig while probing the API | a concurrent `kubectl argo rollouts get` failed with `connection refused` for ~45 s on every re-run | probe uses a temporary copy; the live file is swapped in once the mode is decided |
 | Budget email in Terraform plan | would be printed in public PR comments | variable is `sensitive` |
 | `helm test --logs` after hook deletion | "pod not found" although the test passed | test pod kept until the next run |
