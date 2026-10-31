@@ -43,13 +43,16 @@ HELPER() { "$POB_ROOT/.venv/bin/python" "$POB_ROOT/scripts/aws_helper.py" "$@"; 
 stop_local() {
   if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     docker compose -f "$POB_ROOT/docker-compose.yml" down -v --remove-orphans 2>&1 | tail -n 3 || true
-    if command -v kind >/dev/null 2>&1; then
-      local c
-      for c in $(kind get clusters 2>/dev/null | grep -E '^(pob-gate|gate)$' || true); do
-        kind delete cluster --name "$c"
-      done
-    fi
-    ok "local docker compose stack and kind gate clusters stopped"
+    # Find kind clusters by their container label, so this works even when the
+    # kind binary is not installed (e.g. a fresh clone).
+    local c ids stopped=()
+    for c in pob-gate gate; do
+      ids=$(docker ps -aq --filter "label=io.x-k8s.kind.cluster=$c")
+      [[ -n "$ids" ]] || continue
+      if command -v kind >/dev/null 2>&1; then kind delete cluster --name "$c"; else xargs -r docker rm -f <<<"$ids" >/dev/null; fi
+      stopped+=("$c")
+    done
+    ok "local docker compose stack stopped; kind gate clusters removed: ${stopped[*]:-none running}"
   else
     info "Docker not running: no local stack to stop"
   fi
