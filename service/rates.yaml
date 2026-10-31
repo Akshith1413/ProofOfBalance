@@ -1,0 +1,7 @@
+# Fixed FX rates. Mounted into the service as a ConfigMap; never fetched live.
+# Values MUST be quoted strings: an unquoted 83.25 is a binary float in YAML.
+fee_bps: "20"
+corridors:
+  USD-INR: "83.25"
+  USD-MXN: "18.2450"
+  USD-BRL: "5.4125"
