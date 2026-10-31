@@ -46,6 +46,7 @@ panels = [
           options={"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False}}),
     panel("stat", "Payments accepted (5m)", [(f'sum(increase(pob_payments_total{{{NS},status="pending"}}[5m]))', "")],
           18, 0, 6, 5, unit="short", desc="New payments accepted by the API in the last 5 minutes.",
+          thresholds=[{"color": "blue", "value": None}],  # a count, not a health signal: never red
           options={"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False}}),
     panel("timeseries", "Settled value per corridor (USD / 5m)",
           [(f'sum by (corridor) (increase(pob_settlement_value_usd_total{{{NS},status="paid"}}[5m]))', "{{corridor}}")],
