@@ -1,0 +1,5 @@
+-r tools/requirements.txt
+-r service/requirements.txt
+-r rail/requirements.txt
+-r scripts/requirements.txt
+pytest==9.2.0
