@@ -1,0 +1,97 @@
+# Local stack: Postgres, migrations, settlement API, payout workers, rail, reconciler.
+#   docker compose up -d --build --wait
+#   python tools/replay.py --file traffic/day1.jsonl --url http://localhost:8080 --workers 8
+# Override any knob from your shell, e.g.  ROUNDING_MODE=ROUND_HALF_UP docker compose up -d
+name: proofofbalance
+
+x-app-env: &app-env
+  DATABASE_URL: postgresql://pob:pob@postgres:5432/pob
+  RATES_FILE: /etc/pob/rates.yaml
+  ROUNDING_MODE: ${ROUNDING_MODE:-ROUND_HALF_EVEN}
+  SETTLEMENT_TZ: ${SETTLEMENT_TZ:-UTC}
+  RAIL_URL: http://rail:8081
+  RAIL_TIMEOUT_MS: ${RAIL_TIMEOUT_MS:-10000}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: pob
+      POSTGRES_PASSWORD: pob
+      POSTGRES_DB: pob
+    ports: ["${POB_PG_PORT:-5432}:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pob -d pob"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  migrate:
+    image: postgres:16
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      PGHOST: postgres
+      PGUSER: pob
+      PGPASSWORD: pob
+      PGDATABASE: pob
+    volumes:
+      - ./db/migrations:/migrations:ro
+      - ./db/migrate.sh:/migrate.sh:ro
+    entrypoint: ["sh", "/migrate.sh"]
+    restart: "no"
+
+  rail:
+    build: ./rail
+    image: pob/rail:dev
+    environment:
+      DELAY_MS: ${RAIL_DELAY_MS:-0}
+      DELAY_MS_BY_CURRENCY: ${RAIL_DELAY_MS_BY_CURRENCY:-}
+      FAIL_PERMILLE: ${RAIL_FAIL_PERMILLE:-5}
+    ports: ["${POB_RAIL_PORT:-8081}:8081"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=2)"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  service:
+    build: ./service
+    image: pob/service:dev
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    environment: *app-env
+    volumes: [./service/rates.yaml:/etc/pob/rates.yaml:ro]
+    ports: ["${POB_SERVICE_PORT:-8080}:8080"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=2)"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  worker:
+    image: pob/service:dev
+    command: ["python", "-m", "app.worker"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      rail: { condition: service_healthy }
+      service: { condition: service_started }  # ensures the image is built first
+    environment: *app-env
+    volumes: [./service/rates.yaml:/etc/pob/rates.yaml:ro]
+    deploy: { replicas: 2 }
+    stop_grace_period: 20s
+
+  reconciler:
+    image: pob/service:dev
+    command: ["python", "-m", "app.reconciler"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      service: { condition: service_started }
+    environment:
+      <<: *app-env
+      RECONCILE_INTERVAL_S: "10"
+
+volumes:
+  pgdata:
