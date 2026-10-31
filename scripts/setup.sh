@@ -288,7 +288,9 @@ fetch_kubeconfig() {
   local raw
   raw=$(on_node 'sudo cat /etc/rancher/k3s/k3s.yaml') || return 1
   [[ "$raw" == *"server: https://127.0.0.1:6443"* ]] || { warn "unexpected kubeconfig content from the node"; return 1; }
-  ( umask 077; printf '%s\n' "${raw//127.0.0.1/$PUBLIC_IP}" >"$KUBECONFIG" )
+  # Written next to the live kubeconfig; wait_for_k3s swaps it in once the API
+  # mode is known, so other kubectl sessions never see a half-decided file.
+  ( umask 077; printf '%s\n' "${raw//127.0.0.1/$PUBLIC_IP}" >"$KUBECONFIG.new" )
 }
 
 wait_for_k3s() {
@@ -307,15 +309,17 @@ wait_for_k3s() {
   # Direct first; many campus/corporate networks block outbound 6443, so fall
   # back to an SSH tunnel (port 22) instead of exposing the API more widely.
   local mode=direct
-  if ! probe_until 45 5 kubectl get --raw /readyz; then
+  if ! KUBECONFIG="$KUBECONFIG.new" probe_until 45 5 kubectl get --raw /readyz; then
     warn "port 6443 is not reachable from this network (firewall?); switching kubectl to an SSH tunnel"
     tunnel_start "$PUBLIC_IP" || fail "could not open an SSH tunnel to the node" \
       "SSH works but the tunnel failed. Is local port $TUNNEL_PORT free? Set POB_TUNNEL_PORT in .env to change it."
-    kubeconfig_point_at "$KUBECONFIG" tunnel "$PUBLIC_IP"
+    kubeconfig_point_at "$KUBECONFIG.new" tunnel "$PUBLIC_IP"
+    mv "$KUBECONFIG.new" "$KUBECONFIG"
     mode=tunnel
     wait_until 120 5 "Kubernetes API through the SSH tunnel" kubectl get --raw /readyz ||
       fail "Kubernetes API not reachable, directly or through SSH" "Check k3s on the node: ssh -i $SSH_KEY ubuntu@$PUBLIC_IP sudo k3s kubectl get nodes"
   fi
+  if [[ -f "$KUBECONFIG.new" ]]; then mv "$KUBECONFIG.new" "$KUBECONFIG"; fi
   echo "$mode" >"$SECRETS_DIR/api_mode"
   wait_until 300 5 "node Ready" bash -c "kubectl get nodes --no-headers | grep -q ' Ready'"
   # CoreDNS only turns ready once pods can reach the API through its service IP:
