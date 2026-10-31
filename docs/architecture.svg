@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 560" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif">
+  <title>ProofOfBalance: two gates stop a money change</title>
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8a857c"/>
+    </marker>
+    <style>
+      .lane { fill: #f1eeea; stroke: #d6d1ca; }
+      .box { fill: #faf8f5; stroke: #b9b3aa; }
+      .h { font-size: 15px; font-weight: 700; fill: #222; }
+      .t { font-size: 13px; font-weight: 700; fill: #222; text-anchor: middle; }
+      .s { font-size: 11.5px; fill: #555; text-anchor: middle; }
+      .e { font-size: 11px; fill: #6b665f; }
+      .line { stroke: #8a857c; stroke-width: 1.5; fill: none; marker-end: url(#arr); }
+    </style>
+  </defs>
+  <rect width="980" height="560" fill="#ffffff"/>
+  <text x="20" y="34" font-size="20" font-weight="700" fill="#222">Two gates stop a money change: one before merge, one in production</text>
+
+  <!-- before merge -->
+  <rect class="lane" x="20" y="54" width="940" height="200" rx="10"/>
+  <text class="h" x="38" y="80">Before merge: GitHub Actions (ledger-gate.yml, kind)</text>
+
+  <rect class="box" x="40" y="100" width="190" height="88" rx="8"/>
+  <text class="t" x="135" y="132">Pull request</text>
+  <text class="s" x="135" y="152">Terraform, Helm values,</text>
+  <text class="s" x="135" y="168">Dockerfile or code</text>
+
+  <rect class="box" x="270" y="100" width="190" height="88" rx="8"/>
+  <text class="t" x="365" y="132">Replay on kind</text>
+  <text class="s" x="365" y="152">5,000 payments, 8 workers,</text>
+  <text class="s" x="365" y="168">throwaway cluster</text>
+
+  <rect class="box" x="500" y="100" width="190" height="88" rx="8"/>
+  <text class="t" x="595" y="132">Ledger diff</text>
+  <text class="s" x="595" y="152">vs committed baseline,</text>
+  <text class="s" x="595" y="168">per corridor + invariant</text>
+
+  <rect x="760" y="100" width="180" height="88" rx="8" fill="#fbe9e7" stroke="#d9534f" stroke-width="2"/>
+  <text class="t" x="850" y="132">Blocked</text>
+  <text class="s" x="850" y="152">red required check</text>
+  <text class="s" x="850" y="168">and a PR comment</text>
+
+  <path class="line" d="M230,144 H268"/>
+  <path class="line" d="M460,144 H498"/>
+  <path class="line" d="M690,144 H758"/>
+  <text class="e" x="700" y="136">changed</text>
+  <path class="line" d="M595,188 V230 H130 V318"/>
+  <text class="e" x="606" y="214">identical: merge allowed</text>
+
+  <!-- after merge -->
+  <rect class="lane" x="20" y="276" width="940" height="200" rx="10"/>
+  <text class="h" x="38" y="302">After merge: AWS ap-south-1, k3s on one EC2 instance built by Terraform</text>
+
+  <rect class="box" x="40" y="320" width="190" height="88" rx="8"/>
+  <text class="t" x="135" y="352">Build and scan</text>
+  <text class="s" x="135" y="372">build.yml: Trivy (CRITICAL),</text>
+  <text class="s" x="135" y="388">push to GHCR by SHA</text>
+
+  <rect class="box" x="270" y="320" width="190" height="88" rx="8"/>
+  <text class="t" x="365" y="352">Canary at 20%</text>
+  <text class="s" x="365" y="372">Argo Rollouts,</text>
+  <text class="s" x="365" y="388">1 of 5 payout workers</text>
+
+  <rect class="box" x="500" y="320" width="190" height="88" rx="8"/>
+  <text class="t" x="595" y="352">Value check</text>
+  <text class="s" x="595" y="372">failed value &lt; 0.5%,</text>
+  <text class="s" x="595" y="388">zero duplicate payouts</text>
+
+  <rect x="760" y="306" width="180" height="56" rx="8" fill="#e8f5e9" stroke="#43a047" stroke-width="2"/>
+  <text class="t" x="850" y="339">Promote to 100%</text>
+  <rect x="760" y="384" width="180" height="56" rx="8" fill="#fff4e0" stroke="#e0a030" stroke-width="2"/>
+  <text class="t" x="850" y="417">Roll back</text>
+
+  <path class="line" d="M230,364 H268"/>
+  <path class="line" d="M460,364 H498"/>
+  <path class="line" d="M690,352 C720,352 730,334 758,334"/>
+  <path class="line" d="M690,376 C720,376 730,412 758,412"/>
+  <text class="e" x="712" y="330">pass</text>
+  <text class="e" x="716" y="408">fail</text>
+
+  <text class="e" x="38" y="506">Settlement API + payout workers (FastAPI, Python Decimal) -> PostgreSQL 16 double-entry ledger -> mock stablecoin rail (counts duplicates).</text>
+  <text class="e" x="38" y="526">Reconciler checks every 30 s that each payment's postings sum to zero per currency. Prometheus + Alertmanager page on LedgerUnbalanced / DuplicatePayout.</text>
+  <text class="e" x="38" y="546">Terraform: VPC, security group (22/6443 from your IP only), EC2 t3.medium + Elastic IP, GitHub OIDC roles, $10 budget. S3 state with native locking.</text>
+</svg>
