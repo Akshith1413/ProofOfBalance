@@ -1,0 +1,43 @@
+#!/bin/bash
+# Bootstraps a single-node k3s cluster. Runs once, on first boot (cloud-init).
+# Progress: /var/log/pob-bootstrap.log ; done marker: /var/lib/pob/bootstrap-done
+set -euxo pipefail
+exec > >(tee -a /var/log/pob-bootstrap.log) 2>&1
+
+mkdir -p /var/lib/pob
+
+# The instance is small; a little swap keeps image imports from OOM-ing.
+if [ ! -f /swapfile ]; then
+  fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+  echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
+
+# --tls-san puts the Elastic IP in the API certificate so kubectl works from a
+# laptop. Do NOT add --node-external-ip: k3s would then advertise the public IP
+# as the in-cluster API endpoint, pods would hairpin through the internet
+# gateway, and the security group (6443 = admin IPs only) would drop them.
+export INSTALL_K3S_EXEC="server --tls-san ${public_ip} --write-kubeconfig-mode 0644 --disable traefik"
+%{ if k3s_version != "" ~}
+export INSTALL_K3S_VERSION="${k3s_version}"
+%{ else ~}
+export INSTALL_K3S_CHANNEL="${k3s_channel}"
+%{ endif ~}
+
+for attempt in 1 2 3 4 5; do
+  if curl -sfL --retry 5 --retry-delay 5 https://get.k3s.io -o /tmp/k3s-install.sh && sh /tmp/k3s-install.sh; then
+    break
+  fi
+  echo "k3s install attempt $attempt failed; retrying in 20s"
+  sleep 20
+done
+
+for i in $(seq 1 60); do
+  if k3s kubectl get nodes 2>/dev/null | grep -q ' Ready'; then
+    touch /var/lib/pob/bootstrap-done
+    echo "k3s ready"
+    exit 0
+  fi
+  sleep 5
+done
+echo "k3s did not become Ready" >&2
+exit 1
