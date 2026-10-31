@@ -1,0 +1,8 @@
+apiVersion: v2
+name: proofofbalance
+description: FX settlement service with a double-entry ledger, payout workers, a mock stablecoin rail, reconciler and canary analysis.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords: [ledger, payments, ci-gate, argo-rollouts]
+home: https://github.com/Akshith1413/ProofOfBalance

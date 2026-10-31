@@ -1,0 +1,48 @@
+{{- $name := include "pob.name" (dict "ctx" . "component" "worker") }}
+{{- if .Values.worker.rollout.enabled }}
+# Argo Rollouts canary without a service mesh: the split is by replica count.
+# setWeight 20 with 5 replicas = 1 canary worker. Workers share one queue, so
+# the canary settles ~20% of payouts; the AnalysisTemplate judges its metrics.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "pob.labels" (dict "ctx" . "component" "worker") | nindent 4 }}
+spec:
+  replicas: {{ .Values.worker.rollout.replicas }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "pob.selector" (dict "ctx" . "component" "worker") | nindent 6 }}
+  template:
+    {{- include "pob.workerPodTemplate" . | nindent 4 }}
+  strategy:
+    canary:
+      steps:
+        - setWeight: {{ .Values.worker.rollout.canaryWeight }}
+        - analysis:
+            templates:
+              - templateName: {{ include "pob.name" (dict "ctx" . "component" "settlement-value") }}
+            args:
+              - name: canary-hash
+                valueFrom:
+                  podTemplateHashValue: Latest
+        - setWeight: {{ .Values.worker.rollout.secondWeight }}
+        - pause: { duration: {{ .Values.worker.rollout.pauseAfterSecondWeight }} }
+        - setWeight: 100
+{{- else }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "pob.labels" (dict "ctx" . "component" "worker") | nindent 4 }}
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  selector:
+    matchLabels:
+      {{- include "pob.selector" (dict "ctx" . "component" "worker") | nindent 6 }}
+  template:
+    {{- include "pob.workerPodTemplate" . | nindent 4 }}
+{{- end }}

@@ -1,0 +1,41 @@
+{{- if .Values.reconciler.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pob.name" (dict "ctx" . "component" "reconciler") }}
+  labels:
+    {{- include "pob.labels" (dict "ctx" . "component" "reconciler") | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "pob.selector" (dict "ctx" . "component" "reconciler") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "pob.labels" (dict "ctx" . "component" "reconciler") | nindent 8 }}
+    spec:
+      {{- include "pob.podSpecCommon" . | nindent 6 }}
+      containers:
+        - name: reconciler
+          image: {{ include "pob.image" .Values.images.service }}
+          imagePullPolicy: {{ .Values.images.service.pullPolicy }}
+          command: ["python", "-m", "app.reconciler"]
+          env:
+            {{- include "pob.appEnv" . | nindent 12 }}
+            - { name: RECONCILE_INTERVAL_S, value: {{ .Values.reconciler.intervalSeconds | quote }} }
+            - { name: METRICS_PORT, value: "9100" }
+          ports:
+            - { name: metrics, containerPort: 9100 }
+          readinessProbe:
+            tcpSocket: { port: metrics }
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.reconciler.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            {{- include "pob.ratesMount" . | nindent 12 }}
+      volumes:
+        {{- include "pob.ratesVolume" . | nindent 8 }}
+{{- end }}

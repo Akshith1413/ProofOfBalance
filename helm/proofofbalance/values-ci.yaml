@@ -1,0 +1,32 @@
+# Ledger gate on kind inside a GitHub runner: small, fast, no monitoring CRDs.
+images:
+  service: { repository: pob/service, tag: ci, pullPolicy: Never }
+  rail: { repository: pob/rail, tag: ci, pullPolicy: Never }
+
+postgres:
+  persistence: { enabled: false }
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 384Mi }
+
+service:
+  resources:
+    requests: { cpu: 50m, memory: 96Mi }
+    limits: { memory: 256Mi }
+
+worker:
+  resources:
+    requests: { cpu: 25m, memory: 64Mi }
+    limits: { memory: 192Mi }
+
+rail:
+  delayMs: 0
+  failPermille: 5
+  resources:
+    requests: { cpu: 25m, memory: 64Mi }
+
+reconciler:
+  enabled: true
+  intervalSeconds: 10
+  resources:
+    requests: { cpu: 10m, memory: 48Mi }

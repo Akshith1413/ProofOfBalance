@@ -1,0 +1,32 @@
+# k3s on EC2. scripts/setup.sh overrides the image repository/tag and the
+# Postgres secret; everything else lives here.
+images:
+  service: { repository: ghcr.io/akshith1413/proofofbalance-service, tag: latest, pullPolicy: IfNotPresent }
+  rail: { repository: ghcr.io/akshith1413/proofofbalance-rail, tag: latest, pullPolicy: IfNotPresent }
+
+postgres:
+  existingSecret: pob-postgres-credentials
+  persistence:
+    enabled: true
+    size: 5Gi
+
+worker:
+  rollout:
+    enabled: true
+    replicas: 5
+
+rail:
+  delayMs: 20
+  # Production latency CI never sees: the MXN rail answers in ~300 ms.
+  delayMsByCurrency: { MXN: 300 }
+  failPermille: 0          # healthy rail; game days raise it (docs/game-day.md)
+
+trickle:
+  enabled: true
+  rps: 3
+  trafficConfigMap: pob-traffic
+
+monitoring:
+  podMonitor: { enabled: true }
+  prometheusRule: { enabled: true }
+  grafanaDashboard: { enabled: true }

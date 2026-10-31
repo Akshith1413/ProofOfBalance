@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pob.name" (dict "ctx" . "component" "rates") }}
+  labels:
+    {{- include "pob.labels" (dict "ctx" . "component" "rates") | nindent 4 }}
+data:
+  rates.yaml: |
+    # Rendered by Helm from .Values.rates. Values are strings on purpose.
+    fee_bps: {{ .Values.rates.fee_bps | toString | quote }}
+    corridors:
+    {{- range $corridor, $rate := .Values.rates.corridors }}
+      {{ $corridor }}: {{ $rate | toString | quote }}
+    {{- end }}

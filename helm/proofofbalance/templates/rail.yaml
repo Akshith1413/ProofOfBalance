@@ -1,0 +1,60 @@
+{{- $name := include "pob.name" (dict "ctx" . "component" "rail") }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "pob.labels" (dict "ctx" . "component" "rail") | nindent 4 }}
+spec:
+  selector:
+    {{- include "pob.selector" (dict "ctx" . "component" "rail") | nindent 4 }}
+  ports:
+    - { name: http, port: 8081, targetPort: http }
+---
+# Exactly one replica: the rail keeps its transfer history in memory.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "pob.labels" (dict "ctx" . "component" "rail") | nindent 4 }}
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels:
+      {{- include "pob.selector" (dict "ctx" . "component" "rail") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "pob.labels" (dict "ctx" . "component" "rail") | nindent 8 }}
+    spec:
+      {{- include "pob.podSpecCommon" . | nindent 6 }}
+      containers:
+        - name: rail
+          image: {{ include "pob.image" .Values.images.rail }}
+          imagePullPolicy: {{ .Values.images.rail.pullPolicy }}
+          env:
+            - { name: DELAY_MS, value: {{ .Values.rail.delayMs | quote }} }
+            {{- $delays := list }}
+            {{- range $cur, $ms := .Values.rail.delayMsByCurrency }}{{ $delays = append $delays (printf "%s=%v" $cur $ms) }}{{ end }}
+            - { name: DELAY_MS_BY_CURRENCY, value: {{ join "," $delays | quote }} }
+            - { name: FAIL_PERMILLE, value: {{ .Values.rail.failPermille | quote }} }
+            - { name: PORT, value: "8081" }
+          ports:
+            - { name: http, containerPort: 8081 }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 3
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            {{- toYaml .Values.rail.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: {} }
