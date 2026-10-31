@@ -110,3 +110,16 @@ def test_persist_generated_replaces_values(tmp_path):
 def test_confirm_requires_tty_or_yes(answer, expected):
     assert bash("ASSUME_YES=true confirm 'go?'").returncode == 0
     assert bash("confirm 'go?'").returncode != 0  # no terminal -> refuse, never assume yes
+
+
+def test_tunnel_socket_path_is_short_even_for_deep_checkouts():
+    import pathlib, shutil, tempfile
+    tmp_path = pathlib.Path(tempfile.mkdtemp(prefix="rt", dir="/tmp"))  # a short runtime dir, like /run/user/1000
+    tunnel = ROOT / "scripts" / "lib" / "tunnel.sh"
+    deep_a, deep_b = "/x" * 80 + "/a/.secrets", "/x" * 80 + "/b/.secrets"
+    env = {"PATH": "/usr/bin:/bin", "XDG_RUNTIME_DIR": str(tmp_path)}
+    socks = [bash(f"SECRETS_DIR='{d}'; source '{tunnel}'; echo \"$TUNNEL_SOCK\"", env=env).stdout.strip() for d in (deep_a, deep_b)]
+    assert all(s.startswith(str(tmp_path)) for s in socks) and socks[0] != socks[1]
+    assert all(len(s) + 17 < 104 for s in socks)  # ssh appends ".XXXXXXXXXXXXXXXX" while binding
+    assert oct((tmp_path / socks[0].split("/")[-2]).stat().st_mode)[-3:] == "700"
+    shutil.rmtree(tmp_path)
