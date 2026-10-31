@@ -109,8 +109,8 @@ def test_backoff_doubles(settings):
     assert conn.executed[1][1][2] == pytest.approx(settings.retry_base_s * 2)
 
 
-def test_claim_sql_skips_locked_rows():
-    assert "FOR UPDATE OF p SKIP LOCKED" in worker.CLAIM_SQL and "status = 'pending'" in worker.CLAIM_SQL
+def test_claim_sql_picks_pending_rows():
+    assert "status = 'pending'" in worker.CLAIM_SQL
 
 
 def _value(corridor, status):

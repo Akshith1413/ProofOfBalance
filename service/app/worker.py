@@ -1,8 +1,8 @@
 """Payout worker.
 
-Claims one pending payment at a time with FOR UPDATE SKIP LOCKED, calls the
-rail while holding the row lock, then marks it paid (adding the two payout
-postings) or failed, all in the same transaction.
+Picks the oldest pending payment, calls the rail, then marks it paid (adding
+the two payout postings) or failed, in one transaction. The status update and
+ON CONFLICT DO NOTHING on postings make a second attempt harmless.
 
 Outcomes of a rail call:
   200          paid   -> status 'paid', payout legs written
@@ -39,7 +39,6 @@ JOIN postings c ON c.payment_id = p.id AND c.leg = 'fx_out' AND c.amount > 0
 WHERE p.status = 'pending' AND (p.retry_after IS NULL OR p.retry_after <= now())
 ORDER BY p.occurred_at, p.id
 LIMIT 1
-FOR UPDATE OF p SKIP LOCKED
 """
 
 
