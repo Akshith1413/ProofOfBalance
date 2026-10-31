@@ -1,0 +1,157 @@
+name: ledger-gate
+
+# Blocks any change that would move money. Mark BOTH jobs below as required
+# status checks on main (Settings -> Branches), or the gate is only advice.
+#
+# The workflow runs on every PR (no `paths:` filter, because a required check
+# that is skipped by a paths filter blocks the PR forever). Instead
+# dorny/paths-filter decides whether the heavy kind replay is needed; a
+# README-only PR finishes in seconds with a green check.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ledger-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with: { python-version: "3.12", cache: pip, cache-dependency-path: "**/requirements*.txt" }
+      - run: pip install -r requirements-dev.txt
+      - name: Unit tests
+        run: pytest tests/unit
+      - name: Traffic file is reproducible from its seed
+        run: python traffic/generator.py --check
+      - name: Helm chart lints
+        run: |
+          helm lint helm/proofofbalance -f helm/proofofbalance/values-ci.yaml
+          helm lint helm/proofofbalance -f helm/proofofbalance/values-aws.yaml
+      - name: Shell scripts parse
+        run: for f in scripts/*.sh scripts/lib/*.sh scripts/ci/*.sh db/migrate.sh; do bash -n "$f"; done
+
+  ledger-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dorny/paths-filter@v4
+        id: changes
+        with:
+          filters: |
+            money:
+              - "helm/**"
+              - "infra/**"
+              - "**/Dockerfile"
+              - "service/**"
+              - "rail/**"
+              - "db/**"
+              - "traffic/**"
+              - "tools/**"
+              - "baseline/**"
+              - "scripts/ci/**"
+              - ".github/workflows/ledger-gate.yml"
+            baseline:
+              - "baseline/**"
+
+      - name: Decide
+        id: decide
+        run: |
+          if [[ "${{ github.event_name }}" != "pull_request" || "${{ steps.changes.outputs.money }}" == "true" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "### Ledger gate: SKIPPED — no money-relevant files changed" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Baseline changes need the update-baseline label
+        if: github.event_name == 'pull_request' && steps.changes.outputs.baseline == 'true' && !contains(github.event.pull_request.labels.*.name, 'update-baseline')
+        run: |
+          echo "::error::baseline/ledger_baseline.csv changed but the PR is not labelled 'update-baseline'."
+          echo "Nobody may silently accept a money change. Add the label if this is deliberate."
+          exit 1
+
+      - uses: actions/setup-python@v7
+        if: steps.decide.outputs.run == 'true'
+        with: { python-version: "3.12", cache: pip, cache-dependency-path: "tools/requirements.txt" }
+
+      - name: Install tools
+        if: steps.decide.outputs.run == 'true'
+        run: pip install -r tools/requirements.txt
+
+      - name: Build images
+        if: steps.decide.outputs.run == 'true'
+        run: |
+          docker build -t pob/service:ci service/
+          docker build -t pob/rail:ci rail/
+
+      - uses: helm/kind-action@v1
+        if: steps.decide.outputs.run == 'true'
+        with: { cluster_name: gate }
+
+      - name: Load images and install chart
+        if: steps.decide.outputs.run == 'true'
+        run: |
+          kind load docker-image pob/service:ci pob/rail:ci --name gate
+          helm install pob helm/proofofbalance -f helm/proofofbalance/values-ci.yaml \
+            --wait --wait-for-jobs --timeout 10m
+          kubectl get pods -o wide
+
+      - name: Replay traffic and diff the ledger
+        id: diff
+        if: steps.decide.outputs.run == 'true'
+        continue-on-error: true
+        run: scripts/ci/gate.sh --out out/gate
+
+      - name: Job summary
+        if: always() && steps.decide.outputs.run == 'true'
+        run: |
+          if [[ -f out/gate/report.md ]]; then cat out/gate/report.md >> "$GITHUB_STEP_SUMMARY"; \
+          else echo "### Ledger gate: ERROR — no report produced (chart install failed?)" | tee out-report.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Comment on PR
+        if: always() && github.event_name == 'pull_request' && steps.decide.outputs.run == 'true'
+        continue-on-error: true   # PRs from forks get a read-only token
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          f=out/gate/report.md; [[ -f $f ]] || f=out-report.md
+          scripts/ci/pr_comment.sh "${{ github.event.pull_request.number }}" "$f" ledger-gate
+
+      - name: Collect cluster diagnostics
+        if: always() && steps.decide.outputs.run == 'true' && steps.diff.outcome != 'success'
+        run: |
+          mkdir -p out/gate/diag
+          kubectl get all -o wide > out/gate/diag/resources.txt 2>&1 || true
+          kubectl describe pods > out/gate/diag/describe.txt 2>&1 || true
+          for p in $(kubectl get pods -o name); do kubectl logs "$p" --all-containers --tail=500 > "out/gate/diag/${p#pod/}.log" 2>&1 || true; done
+
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.decide.outputs.run == 'true'
+        with:
+          name: ledger-run
+          path: |
+            out/gate/run.csv
+            out/gate/report.md
+            out/gate/diff_rows.csv
+            out/gate/replay.json
+            out/gate/diag/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Fail if the ledger changed
+        if: steps.decide.outputs.run == 'true' && steps.diff.outcome == 'failure'
+        run: |
+          echo "::error::The replayed ledger differs from baseline/ledger_baseline.csv. See the PR comment / job summary."
+          exit 1
