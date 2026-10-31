@@ -1,0 +1,31 @@
+# secrets — never commit
+.env
+.env.*
+!.env.example
+.secrets/
+*.pem
+*.tfvars
+!*.tfvars.example
+
+# local tooling and output
+.venv/
+.tools/
+out/
+logs/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# terraform
+infra/terraform/.terraform/
+infra/terraform/.terraform.lock.hcl.bak
+infra/terraform/tfplan
+infra/terraform/plan.txt
+infra/terraform/plan.md
+*.tfstate
+*.tfstate.*
+
+# CI outputs
+run.csv
+report.md
+diff_rows.csv
